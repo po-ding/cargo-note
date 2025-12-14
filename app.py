@@ -4,35 +4,47 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 import time
-import base64
-
-# OCR 기능을 위한 라이브러리 (에러 방지 처리)
-try:
-    from PIL import Image
-    import pytesseract
-except ImportError:
-    Image = None
-    pytesseract = None
 
 # ==========================================
-# 1. 데이터 및 로직 관리 클래스
+# 0. 스타일 설정 (CSS) - UI 개선
 # ==========================================
+def apply_custom_css():
+    st.markdown("""
+    <style>
+        .block-container { padding-top: 1rem; padding-bottom: 5rem; }
+        h1 { font-size: 1.8rem; color: #333; }
+        h3 { font-size: 1.2rem; border-bottom: 2px solid #eee; padding-bottom: 0.5rem; margin-top: 1rem; }
+        .metric-card {
+            background-color: #f8f9fa; border: 1px solid #eee; border-radius: 8px;
+            padding: 15px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px; white-space: pre-wrap; background-color: #f1f1f1; border-radius: 5px;
+            color: #555; font-weight: bold;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #007bff; color: white;
+        }
+        /* 입력 폼 강조 */
+        [data-testid="stForm"] { background-color: #ffffff; border: 1px solid #ddd; padding: 20px; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
 
+# ==========================================
+# 1. 데이터 관리 클래스 (로직 강화)
+# ==========================================
 class DataManager:
-    def __init__(self, filename="cargo_data_full.json"):
+    def __init__(self, filename="cargo_data_final.json"):
         self.filename = filename
         self.data = {
             "records": [],
             "centers": ["안성", "안산", "용인", "이천", "인천"],
-            "locations": {},  # {center_name: {address: "", memo: ""}}
-            "fares": {},      # {from-to: income}
-            "distances": {},  # {from-to: distance}
-            "costs": {},      # {from-to: cost}
+            "locations": {}, 
+            "fares": {},      
+            "distances": {},  
             "expense_items": [],
-            "settings": {
-                "subsidy_limit": 0,
-                "mileage_correction": 0
-            }
+            "settings": {"subsidy_limit": 0, "mileage_correction": 0}
         }
         self.load_data()
 
@@ -41,517 +53,364 @@ class DataManager:
             try:
                 with open(self.filename, 'r', encoding='utf-8') as f:
                     loaded = json.load(f)
-                    # 깊은 병합 (기존 키 보존)
                     for key in self.data:
                         if key in loaded:
-                            if isinstance(self.data[key], dict):
-                                self.data[key].update(loaded[key])
-                            elif isinstance(self.data[key], list):
-                                # 리스트는 덮어쓰거나 합치기 (여기선 덮어쓰기 전략)
-                                self.data[key] = loaded[key]
-                            else:
-                                self.data[key] = loaded[key]
-            except Exception as e:
-                st.error(f"데이터 로드 실패: {e}")
+                            if isinstance(self.data[key], dict): self.data[key].update(loaded[key])
+                            elif isinstance(self.data[key], list): self.data[key] = loaded[key]
+                            else: self.data[key] = loaded[key]
+            except: pass
 
     def save_data(self):
-        try:
-            with open(self.filename, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            st.error(f"저장 실패: {e}")
-
-    def update_location(self, name, address, memo):
-        if name not in self.data["centers"]:
-            self.data["centers"].append(name)
-            self.data["centers"].sort()
-        
-        self.data["locations"][name] = {"address": address, "memo": memo}
-        self.save_data()
+        with open(self.filename, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def add_record(self, record):
-        # 자동 학습: 운송 구간 정보 저장
+        # 자동 학습 로직
         if record['type'] in ['화물운송', '대기', '공차이동']:
-            if record.get('from') and record.get('to'):
-                key = f"{record['from']}-{record['to']}"
-                if record.get('income', 0) > 0: self.data['fares'][key] = record['income']
-                if record.get('distance', 0) > 0: self.data['distances'][key] = record['distance']
-                if record.get('cost', 0) > 0: self.data['costs'][key] = record['cost']
-                
-            # 센터 목록 업데이트
-            for loc in [record.get('from'), record.get('to')]:
-                if loc and loc not in self.data['centers']:
-                    self.data['centers'].append(loc)
-                    self.data['centers'].sort()
+            if record.get('from') and record.get('from') not in self.data['centers']:
+                self.data['centers'].append(record.get('from'))
+            if record.get('to') and record.get('to') not in self.data['centers']:
+                self.data['centers'].append(record.get('to'))
+            
+            key = f"{record.get('from')}-{record.get('to')}"
+            if record.get('income', 0) > 0: self.data['fares'][key] = record['income']
+            if record.get('distance', 0) > 0: self.data['distances'][key] = record['distance']
+            
+        self.data['centers'].sort()
+        self.data['records'].append(record)
+        self.save_data()
 
-        # 자동 학습: 지출 항목
-        if record.get('expenseItem') and record.get('expenseItem') not in self.data['expense_items']:
-            self.data['expense_items'].append(record.get('expenseItem'))
-            self.data['expense_items'].sort()
-
-        self.data["records"].append(record)
+    def add_center(self, name, address, memo):
+        if name not in self.data['centers']:
+            self.data['centers'].append(name)
+            self.data['centers'].sort()
+        self.data['locations'][name] = {"address": address, "memo": memo}
         self.save_data()
 
     def delete_record(self, record_id):
         self.data["records"] = [r for r in self.data["records"] if r['id'] != record_id]
         self.save_data()
 
-    def get_statistical_date(self, date_str, time_str):
-        """04시 기준 통계 날짜 계산"""
-        try:
-            dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            if dt.hour < 4:
-                dt = dt - timedelta(days=1)
-            return dt.strftime("%Y-%m-%d")
-        except:
-            return date_str
-
-    def calculate_duration(self, records):
-        """운행 시간 계산 (웹 로직 포팅)"""
-        if len(records) < 2: return "0h 0m"
-        sorted_recs = sorted(records, key=lambda x: x['date'] + x['time'])
-        total_minutes = 0
-        for i in range(1, len(sorted_recs)):
-            curr = datetime.strptime(f"{sorted_recs[i]['date']} {sorted_recs[i]['time']}", "%Y-%m-%d %H:%M")
-            prev = datetime.strptime(f"{sorted_recs[i-1]['date']} {sorted_recs[i-1]['time']}", "%Y-%m-%d %H:%M")
-            if sorted_recs[i-1]['type'] != '운행종료':
-                diff = (curr - prev).total_seconds() / 60
-                total_minutes += diff
-        
-        h = int(total_minutes // 60)
-        m = int(total_minutes % 60)
-        return f"{h}h {m}m"
+    def get_stat_date(self, d, t):
+        """04시 기준 날짜 계산"""
+        dt = datetime.strptime(f"{d} {t}", "%Y-%m-%d %H:%M")
+        if dt.hour < 4: dt -= timedelta(days=1)
+        return dt.strftime("%Y-%m-%d")
 
 # ==========================================
-# 2. HTML 리포트 생성기 (프린트 기능)
+# 2. 메인 앱
 # ==========================================
-def generate_html_report(year, month, records, period_type="full", detailed=False):
-    s_day = 16 if period_type == "second" else 1
-    e_day = 15 if period_type == "first" else 31
-    period_str = "1일 ~ 말일" if period_type == "full" else f"{s_day}일 ~ {e_day}일"
-    
-    # HTML 템플릿 (웹 코드의 스타일 차용)
-    html = f"""
-    <html>
-    <head>
-        <style>
-            body {{ font-family: sans-serif; padding: 20px; }}
-            table {{ width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px; }}
-            th, td {{ border: 1px solid #ccc; padding: 6px; text-align: center; }}
-            th {{ background: #eee; }}
-            .summary {{ background: #f9f9f9; padding: 15px; border: 1px solid #ddd; margin-bottom: 20px; }}
-            .txt-red {{ color: #dc3545; font-weight: bold; }}
-            .txt-blue {{ color: #007bff; font-weight: bold; }}
-        </style>
-    </head>
-    <body>
-        <h2>{year}년 {month}월 {period_str} 운송 기록</h2>
-    """
-    
-    # 데이터 집계
-    trans_inc = sum(r.get('income', 0) for r in records if r['type'] in ['화물운송', '대기'])
-    trans_exp = sum(r.get('cost', 0) for r in records if r['type'] in ['화물운송', '대기'])
-    fuel_cost = sum(r.get('cost', 0) for r in records if r['type'] == '주유소')
-    fuel_sub = sum(r.get('subsidy', 0) for r in records if r['type'] == '주유소')
-    gen_exp = sum(r.get('cost', 0) for r in records if r['type'] in ['지출', '소모품'])
-    gen_inc = sum(r.get('income', 0) for r in records if r['type'] == '수입')
-    
-    total_rev = trans_inc + gen_inc
-    total_spd = trans_exp + gen_exp + (fuel_cost - fuel_sub)
-    profit = total_rev - total_spd
-
-    html += f"""
-        <div class="summary">
-            <p><span class="txt-blue">[+] 총 수입: {total_rev:,} 원</span></p>
-            <p><span class="txt-red">[-] 총 지출: {total_spd:,} 원</span> (실주유비 포함)</p>
-            <hr>
-            <h3>[=] 최종 순수익: {profit:,} 원</h3>
-        </div>
-        <h3>1. 운송 내역</h3>
-        <table>
-            <thead><tr><th>날짜</th><th>상차지</th><th>하차지</th><th>구분</th>
-            {'<th>거리</th><th>수입</th>' if detailed else ''}
-            </tr></thead>
-            <tbody>
-    """
-    
-    for r in records:
-        if r['type'] not in ['화물운송', '대기', '공차이동', '운행취소']: continue
-        row = f"<tr><td>{r['date'][5:]}</td><td>{r.get('from','')}</td><td>{r.get('to','')}</td><td>{r['type']}</td>"
-        if detailed:
-            row += f"<td>{r.get('distance','-')}</td><td>{r.get('income',0):,}</td>"
-        row += "</tr>"
-        html += row
-        
-    html += "</tbody></table></body></html>"
-    return html
-
-# ==========================================
-# 3. 메인 Streamlit 앱
-# ==========================================
-
 def main():
-    st.set_page_config(page_title="Cargo Note Pro", page_icon="🚛", layout="centered")
-    
+    st.set_page_config(page_title="Cargo Note", page_icon="🚛", layout="centered")
+    apply_custom_css() # CSS 적용
+
     if 'dm' not in st.session_state:
         st.session_state.dm = DataManager()
-    
     dm = st.session_state.dm
 
-    st.title("🚛 Cargo Note Pro")
+    # --- 상단 헤더 ---
+    c1, c2 = st.columns([3, 1])
+    c1.markdown("# 🚛 Cargo<span style='color:#007bff'>Note</span>", unsafe_allow_html=True)
+    if c2.button("🔄 새로고침"): st.rerun()
 
-    # 탭 구성
-    tab_input, tab_view, tab_stats, tab_settings = st.tabs(["📝 기록 입력", "📋 기록 조회", "📊 통계", "⚙️ 설정/관리"])
+    # --- 데이터 요약 섹션 (Dashboard) ---
+    # 현재 월 기준 요약 (HTML 버전의 상단 요약 기능 복구)
+    now = datetime.now()
+    cur_ym = now.strftime("%Y-%m")
+    month_recs = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']).startswith(cur_ym)]
+    
+    inc = sum(r.get('income', 0) for r in month_recs)
+    exp = sum(r.get('cost', 0) for r in month_recs)
+    dist = sum(r.get('distance', 0) for r in month_recs if r['type']=='화물운송')
+    
+    with st.expander(f"📊 {now.month}월 데이터 요약 (클릭하여 펼치기)", expanded=False):
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 수입", f"{inc:,}", "만원 단위 자동변환됨" if False else None)
+        m2.metric("총 지출", f"{exp:,}")
+        m3.metric("순수익", f"{inc-exp:,}", delta_color="normal")
+        m4.metric("운행거리", f"{dist:.1f} km")
 
-    # ----------------------------------------------------
-    # TAB 1: 기록 입력 (동적 UI 구현)
-    # ----------------------------------------------------
-    with tab_input:
-        st.subheader("운송 및 지출 기록")
-        
-        # 1. 일시
-        c1, c2 = st.columns(2)
-        in_date = c1.date_input("날짜", datetime.now())
-        in_time = c2.time_input("시간", datetime.now(), step=60)
-        
-        # 2. 종류
-        in_type = st.selectbox("기록 종류", ["화물운송", "수입", "주유소", "소모품", "지출", "대기", "공차이동", "운행취소"])
-        
-        form_data = {}
-        
-        # 3. 동적 필드
-        # A. 상하차 (화물운송, 대기, 공차이동)
-        if in_type in ["화물운송", "대기", "공차이동", "운행취소"]:
-            col_f, col_t = st.columns(2)
-            # 상하차지 입력 + 자동완성 (selectbox + text_input 조합 대신 selectbox editable 사용불가하므로, selectbox에 '직접입력' 추가 로직)
-            # 여기서는 편의상 SelectBox와 리스트 관리로 구현
+    # ==========================================
+    # [입력 폼] - 항상 상단에 위치
+    # ==========================================
+    with st.expander("📝 새 기록 입력하기", expanded=True):
+        with st.form("entry_form", clear_on_submit=True):
+            f_c1, f_c2 = st.columns(2)
+            in_date = f_c1.date_input("날짜", datetime.now())
+            in_time = f_c2.time_input("시간", datetime.now(), step=60)
             
-            centers_list = [""] + dm.data['centers']
-            f_center = col_f.selectbox("상차지", centers_list, key="sel_from")
-            t_center = col_t.selectbox("하차지", centers_list, key="sel_to")
+            in_type = st.selectbox("기록 종류", ["화물운송", "수입", "주유소", "소모품", "지출", "대기", "공차이동"])
             
-            # 주소/메모 표시
-            if f_center and f_center in dm.data['locations']:
-                loc = dm.data['locations'][f_center]
-                col_f.caption(f"📍 {loc['address']} | 📝 {loc['memo']}")
-            if t_center and t_center in dm.data['locations']:
-                loc = dm.data['locations'][t_center]
-                col_t.caption(f"📍 {loc['address']} | 📝 {loc['memo']}")
+            # 동적 필드 관리
+            form_data = {}
             
-            # 자동완성 데이터 조회
-            auto_dist = 0.0
-            auto_income = 0.0
-            auto_cost = 0.0
-            if f_center and t_center:
-                key = f"{f_center}-{t_center}"
-                auto_dist = dm.data['distances'].get(key, 0.0)
-                auto_income = dm.data['fares'].get(key, 0) / 10000.0 # 만원 단위
-                auto_cost = dm.data['costs'].get(key, 0) / 10000.0
-            
-            form_data['distance'] = st.number_input("운행거리(km)", value=float(auto_dist), step=1.0)
-            form_data['from'] = f_center
-            form_data['to'] = t_center
-
-        # B. 주유 (주유소)
-        if in_type == "주유소":
-            cf1, cf2 = st.columns(2)
-            u_price = cf1.number_input("단가 (원/L)", min_value=0, step=10)
-            liters = cf2.number_input("주유량 (L)", min_value=0.0, step=0.1)
-            brand = st.selectbox("브랜드", ["S-OIL", "SK에너지", "GS칼텍스", "현대오일뱅크", "기타"])
-            
-            # 보조금 자동 계산 (리터당 약 345원 예시, 실제론 사용자 설정 가능하게 하면 좋음)
-            # 여기선 입력받도록 함
-            subsidy = st.number_input("유가보조금 (원)", value=0, help="자동으로 차감 계산됩니다.")
-            
-            form_data['unitPrice'] = u_price
-            form_data['liters'] = liters
-            form_data['brand'] = brand
-            form_data['subsidy'] = subsidy
-            
-            # 주유비 자동계산 (화면 표시용)
-            if u_price > 0 and liters > 0:
-                est_cost = (u_price * liters) / 10000.0
-            else:
-                est_cost = 0.0
+            if in_type in ["화물운송", "대기", "공차이동"]:
+                # 자동완성 데이터 로드
+                centers = [""] + dm.data['centers']
+                c_from = st.selectbox("상차지", centers, key="f_from")
+                c_to = st.selectbox("하차지", centers, key="f_to")
                 
-        # C. 내역 (수입, 지출, 소모품)
-        if in_type in ["수입", "지출", "소모품"]:
-            expense_list = [""] + dm.data['expense_items']
-            # 새 항목 입력 가능하도록 text_input 병행
-            ex_item_sel = st.selectbox("내역 선택", expense_list)
-            ex_item_txt = st.text_input("내역 직접 입력 (새 항목)")
-            
-            final_item = ex_item_txt if ex_item_txt else ex_item_sel
-            form_data['item'] = final_item
-            
-            if in_type == "소모품":
-                form_data['mileage'] = st.number_input("교체 시점 누적 주행거리 (km)", value=0)
+                # 주소 표시 (원본 기능 복구)
+                loc_info = []
+                if c_from in dm.data['locations']: loc_info.append(f"[상] {dm.data['locations'][c_from].get('address','')}")
+                if c_to in dm.data['locations']: loc_info.append(f"[하] {dm.data['locations'][c_to].get('address','')}")
+                if loc_info: st.caption(" / ".join(loc_info))
+                
+                # 거리/금액 자동 채우기
+                auto_dist = 0.0
+                auto_inc = 0.0
+                if c_from and c_to:
+                    key = f"{c_from}-{c_to}"
+                    auto_dist = dm.data['distances'].get(key, 0.0)
+                    auto_inc = dm.data['fares'].get(key, 0) / 10000.0
+                
+                dist = st.number_input("거리(km)", value=float(auto_dist))
+                form_data.update({"from": c_from, "to": c_to, "distance": dist})
+                
+                # 수입 입력
+                in_income = st.number_input("수입 (만원)", value=float(auto_inc), step=1.0)
+                in_cost = 0.0
 
-        # 4. 금액 (만원 단위 입력 -> 원 단위 저장)
-        st.markdown("---")
-        c_inc, c_exp = st.columns(2)
-        
-        in_income = 0.0
-        in_cost = 0.0
-        
-        # 타입별 활성화
-        if in_type in ["화물운송", "수입", "대기"]:
-            in_income = c_inc.number_input("수입 금액 (만원)", value=float(auto_income) if 'auto_income' in locals() else 0.0, step=0.5)
-        
-        if in_type in ["주유소", "지출", "소모품", "공차이동"]:
-            def_cost = float(est_cost) if 'est_cost' in locals() else (float(auto_cost) if 'auto_cost' in locals() else 0.0)
-            in_cost = c_exp.number_input("지출 금액 (만원)", value=def_cost, step=0.5)
+            elif in_type == "주유소":
+                uc1, uc2 = st.columns(2)
+                u_price = uc1.number_input("단가", step=10)
+                liters = uc2.number_input("주유량(L)", step=1.0)
+                brand = st.selectbox("브랜드", ["S-OIL", "SK에너지", "GS칼텍스", "현대오일뱅크", "기타"])
+                form_data.update({"unitPrice": u_price, "liters": liters, "brand": brand})
+                
+                in_income = 0.0
+                calc_cost = (u_price * liters) / 10000.0
+                in_cost = st.number_input("지출 (만원)", value=calc_cost, step=1.0)
+            
+            else: # 지출, 수입, 소모품
+                item = st.text_input("내역 (적요)")
+                form_data["item"] = item
+                
+                ic1, ic2 = st.columns(2)
+                if in_type == "수입":
+                    in_income = ic1.number_input("수입 (만원)", step=1.0)
+                    in_cost = 0.0
+                else:
+                    in_income = 0.0
+                    in_cost = ic2.number_input("지출 (만원)", step=1.0)
 
-        # 5. 액션 버튼
-        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+            # 저장 버튼
+            submitted = st.form_submit_button("💾 기록 저장", type="primary", use_container_width=True)
+            if submitted:
+                new_rec = {
+                    "id": int(datetime.now().timestamp() * 1000),
+                    "date": in_date.strftime("%Y-%m-%d"),
+                    "time": in_time.strftime("%H:%M"),
+                    "type": in_type,
+                    "income": int(in_income * 10000),
+                    "cost": int(in_cost * 10000),
+                    **form_data
+                }
+                # 키 이름 통일
+                if "item" in form_data:
+                    if in_type == "소모품": new_rec["supplyItem"] = form_data["item"]
+                    else: new_rec["expenseItem"] = form_data["item"]
+                
+                dm.add_record(new_rec)
+                st.toast("저장되었습니다!")
+                time.sleep(0.5)
+                st.rerun()
+
+    # ==========================================
+    # [뷰 섹션] - 탭 구조 복원 (오늘/일별/주별/월별)
+    # ==========================================
+    st.markdown("### 📋 기록 조회")
+    
+    # 탭 메뉴 구성
+    tabs = st.tabs(["오늘", "일별", "주별", "월별", "⚙️ 설정/지역관리"])
+
+    # --- TAB 1: 오늘 (Today) ---
+    with tabs[0]:
+        # 오늘 날짜 (04시 기준)
+        today_stat = dm.get_stat_date(datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%H:%M"))
         
-        if btn_col1.button("💾 기록 저장", type="primary", use_container_width=True):
-            new_record = {
-                "id": int(datetime.now().timestamp() * 1000),
-                "date": in_date.strftime("%Y-%m-%d"),
-                "time": in_time.strftime("%H:%M"),
-                "type": in_type,
-                "income": int(in_income * 10000),
-                "cost": int(in_cost * 10000),
-                "distance": form_data.get('distance', 0),
-                "from": form_data.get('from', ""),
-                "to": form_data.get('to', ""),
-                "unitPrice": form_data.get('unitPrice', 0),
-                "liters": form_data.get('liters', 0),
-                "subsidy": form_data.get('subsidy', 0), # 보조금 저장
-                "brand": form_data.get('brand', ""),
-                "expenseItem": form_data.get('item', "") if in_type != "소모품" else "",
-                "supplyItem": form_data.get('item', "") if in_type == "소모품" else "",
-                "mileage": form_data.get('mileage', 0)
-            }
-            dm.add_record(new_record)
-            st.success("저장 완료!")
-            time.sleep(0.5)
+        # 날짜 이동 버튼
+        col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+        if 'view_date' not in st.session_state: st.session_state.view_date = datetime.strptime(today_stat, "%Y-%m-%d")
+        
+        if col_nav1.button("◀ 전일"): 
+            st.session_state.view_date -= timedelta(days=1)
+            st.rerun()
+        with col_nav2:
+            display_date = st.date_input("조회일", st.session_state.view_date, label_visibility="collapsed")
+            if display_date != st.session_state.view_date.date():
+                st.session_state.view_date = datetime.combine(display_date, datetime.min.time())
+                st.rerun()
+        if col_nav3.button("익일 ▶"): 
+            st.session_state.view_date += timedelta(days=1)
             st.rerun()
 
-        if btn_col2.button("🛑 운행 종료", use_container_width=True):
-             dm.add_record({
-                "id": int(datetime.now().timestamp() * 1000),
-                "date": in_date.strftime("%Y-%m-%d"),
-                "time": in_time.strftime("%H:%M"),
-                "type": "운행종료",
-                "income": 0, "cost": 0, "distance": 0
-            })
-             st.info("운행 종료 처리됨.")
-             st.rerun()
+        target_date_str = st.session_state.view_date.strftime("%Y-%m-%d")
+        day_recs = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']) == target_date_str]
+        day_recs.sort(key=lambda x: x['time'])
 
-        if btn_col3.button("🔄 초기화"):
-            st.rerun()
-
-    # ----------------------------------------------------
-    # TAB 2: 기록 조회 (오늘/전체)
-    # ----------------------------------------------------
-    with tab_view:
-        st.subheader("📋 기록 조회")
-        
-        col_v1, col_v2 = st.columns(2)
-        with col_v1:
-            view_year = st.selectbox("연도", range(2023, 2030), index=2) # 2025 default
-        with col_v2:
-            view_month = st.selectbox("월", range(1, 13), index=datetime.now().month-1)
+        if day_recs:
+            # 오늘의 요약
+            d_inc = sum(r.get('income',0) for r in day_recs)
+            d_exp = sum(r.get('cost',0) for r in day_recs)
+            st.info(f"📅 {target_date_str} | 수입: {d_inc:,}원 | 지출: {d_exp:,}원 | 정산: {d_inc-d_exp:,}원")
             
-        target_ym = f"{view_year}-{view_month:02d}"
-        
-        # 데이터 필터링 (04시 기준)
-        filtered = [r for r in dm.data['records'] if dm.get_statistical_date(r['date'], r['time']).startswith(target_ym)]
-        filtered.sort(key=lambda x: x['date'] + x['time'], reverse=True)
-        
-        if filtered:
-            # 요약 표시
-            tot_inc = sum(r.get('income',0) for r in filtered)
-            tot_exp = sum(r.get('cost',0) for r in filtered)
-            tot_sub = sum(r.get('subsidy',0) for r in filtered)
-            real_exp = tot_exp - tot_sub
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("총 수입", f"{tot_inc:,}원")
-            m2.metric("실 지출", f"{real_exp:,}원", f"보조금 {tot_sub:,}원 차감")
-            m3.metric("순수익", f"{tot_inc - real_exp:,}원")
-            
-            st.divider()
-            
-            # 테이블 데이터 생성
-            table_data = []
-            for r in filtered:
-                desc = r['type']
-                if r['type'] in ['화물운송', '대기']:
-                    desc = f"{r.get('from','')} -> {r.get('to','')}"
-                elif r['type'] == '주유소':
-                    desc = f"{r.get('brand','')} ({r.get('liters',0)}L)"
-                elif r.get('expenseItem') or r.get('supplyItem'):
-                    desc = r.get('expenseItem') or r.get('supplyItem')
-                    
-                table_data.append({
-                    "ID": r['id'],
-                    "날짜": r['date'],
+            # 테이블 표시
+            df_day = []
+            for r in day_recs:
+                detail = r['type']
+                if r['type'] in ['화물운송', '대기']: detail = f"{r.get('from')} → {r.get('to')}"
+                elif r['type'] == '주유소': detail = f"{r.get('brand')} ({r.get('liters')}L)"
+                elif 'expenseItem' in r: detail = r.get('expenseItem')
+                
+                df_day.append({
                     "시간": r['time'],
                     "구분": r['type'],
-                    "내용": desc,
-                    "거리": r.get('distance', 0),
-                    "수입": f"{r.get('income',0):,}",
-                    "지출": f"{r.get('cost',0):,}",
-                    "보조금": f"{r.get('subsidy',0):,}" if r.get('subsidy',0)>0 else ""
+                    "내용": detail,
+                    "금액": f"{r.get('income',0) - r.get('cost',0):,}",
+                    "ID": r['id']
                 })
+            st.dataframe(pd.DataFrame(df_day).drop(columns=["ID"]), hide_index=True, use_container_width=True)
             
-            st.dataframe(pd.DataFrame(table_data), hide_index=True, use_container_width=True)
-            
-            # 삭제 기능
-            with st.expander("🗑️ 기록 삭제"):
-                del_id = st.selectbox("삭제할 ID 선택", [d['ID'] for d in table_data])
-                if st.button("선택 삭제"):
-                    dm.delete_record(del_id)
-                    st.success("삭제됨")
-                    st.rerun()
+            # 삭제
+            del_target = st.selectbox("삭제할 항목", df_day, format_func=lambda x: f"{x['시간']} | {x['구분']} | {x['내용']}")
+            if st.button("선택 항목 삭제"):
+                dm.delete_record(del_target['ID'])
+                st.rerun()
         else:
-            st.info("데이터가 없습니다.")
+            st.warning(f"{target_date_str} 기록이 없습니다.")
 
-    # ----------------------------------------------------
-    # TAB 3: 통계 (상세 분석)
-    # ----------------------------------------------------
-    with tab_stats:
-        st.subheader("📊 데이터 분석")
+    # --- TAB 2: 일별 (Daily) ---
+    with tabs[1]:
+        d_year = st.selectbox("년도", range(2023, 2030), index=2, key="d_y")
+        d_month = st.selectbox("월", range(1, 13), index=datetime.now().month-1, key="d_m")
+        target_ym = f"{d_year}-{d_month:02d}"
         
-        if filtered: # 위에서 필터링한 데이터 활용
-            # 1. 월간 요약
-            transport_recs = [r for r in filtered if r['type']=='화물운송']
-            fuel_recs = [r for r in filtered if r['type']=='주유소']
+        # 일별 집계
+        daily_stats = {}
+        target_recs = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']).startswith(target_ym)]
+        
+        for r in target_recs:
+            s_date = dm.get_stat_date(r['date'], r['time'])
+            if s_date not in daily_stats: daily_stats[s_date] = {'inc':0, 'exp':0, 'dist':0}
+            daily_stats[s_date]['inc'] += r.get('income', 0)
+            daily_stats[s_date]['exp'] += r.get('cost', 0)
+            if r['type'] == '화물운송': daily_stats[s_date]['dist'] += r.get('distance', 0)
             
-            tot_dist = sum(r.get('distance',0) for r in transport_recs)
-            trip_cnt = len(transport_recs)
-            tot_fuel = sum(r.get('liters',0) for r in fuel_recs)
-            
-            # 주행거리 보정 적용
-            correction = dm.data['settings'].get('mileage_correction', 0)
-            final_dist = tot_dist + correction
-            
-            col_s1, col_s2, col_s3 = st.columns(3)
-            col_s1.metric("총 운행거리", f"{final_dist:,.1f} km", f"보정 {correction}km 포함")
-            col_s2.metric("운행 건수", f"{trip_cnt} 건")
-            if tot_fuel > 0:
-                col_s3.metric("평균 연비", f"{final_dist/tot_fuel:.2f} km/L")
-            else:
-                col_s3.metric("평균 연비", "0.0 km/L")
-            
-            # 2. 유가보조금 현황 (Progress Bar)
-            st.markdown("#### ⛽ 유가보조금 / 한도 관리")
-            limit = dm.data['settings'].get('subsidy_limit', 0)
-            if limit > 0:
-                used_pct = min(1.0, tot_fuel / limit)
-                st.progress(used_pct, text=f"사용량 {tot_fuel:.1f}L / 한도 {limit}L")
-                st.caption(f"잔여 한도: {limit - tot_fuel:.1f} L")
-            else:
-                st.warning("설정 탭에서 월 한도를 설정해주세요.")
+        if daily_stats:
+            rows = []
+            for d in sorted(daily_stats.keys(), reverse=True):
+                day_d = daily_stats[d]
+                rows.append({
+                    "일자": d,
+                    "수입": f"{day_d['inc']:,}",
+                    "지출": f"{day_d['exp']:,}",
+                    "정산": f"{day_d['inc']-day_d['exp']:,}",
+                    "거리": f"{day_d['dist']:.1f}"
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        else:
+            st.write("데이터 없음")
 
-            # 3. HTML 리포트 출력 (프린트)
-            st.markdown("#### 🖨️ 운송내역서 출력")
-            p_cols = st.columns(3)
-            if p_cols[0].button("1~15일 내역"):
-                html = generate_html_report(view_year, view_month, filtered, "first")
-                b64 = base64.b64encode(html.encode()).decode()
-                href = f'<a href="data:text/html;base64,{b64}" download="report_1st.html">📄 1~15일 다운로드</a>'
-                st.markdown(href, unsafe_allow_html=True)
+    # --- TAB 3: 주별 (Weekly) ---
+    with tabs[2]:
+        # 월별 데이터를 주차별로 그룹화
+        if not target_recs:
+            st.write("해당 월의 데이터가 없습니다.")
+        else:
+            weekly_data = {}
+            for r in target_recs:
+                s_date = datetime.strptime(dm.get_stat_date(r['date'], r['time']), "%Y-%m-%d")
+                # 주차 계산 (대략적)
+                week_num = (s_date.day - 1) // 7 + 1
+                if week_num > 4: week_num = 4 # 5주차는 4주차에 포함하거나 별도 처리 (여기선 편의상 4주차로)
                 
-            if p_cols[1].button("16~말일 내역"):
-                html = generate_html_report(view_year, view_month, filtered, "second")
-                b64 = base64.b64encode(html.encode()).decode()
-                href = f'<a href="data:text/html;base64,{b64}" download="report_2nd.html">📄 16~말일 다운로드</a>'
-                st.markdown(href, unsafe_allow_html=True)
-
-            if p_cols[2].button("전체 상세 내역"):
-                html = generate_html_report(view_year, view_month, filtered, "full", detailed=True)
-                b64 = base64.b64encode(html.encode()).decode()
-                href = f'<a href="data:text/html;base64,{b64}" download="report_full.html">📄 월간 전체 다운로드</a>'
-                st.markdown(href, unsafe_allow_html=True)
-        else:
-            st.write("데이터가 없습니다.")
-
-    # ----------------------------------------------------
-    # TAB 4: 설정 및 관리 (일괄적용, 센터관리, OCR, 백업)
-    # ----------------------------------------------------
-    with tab_settings:
-        st.subheader("⚙️ 환경 설정 및 데이터 관리")
-        
-        st_t1, st_t2, st_t3, st_t4 = st.tabs(["기본 설정", "지역 관리", "일괄 적용/OCR", "백업/복원"])
-        
-        # 4-1. 기본 설정 (보조금, 거리보정)
-        with st_t1:
-            with st.form("settings_form"):
-                new_limit = st.number_input("유가보조금 월 한도 (L)", value=dm.data['settings'].get('subsidy_limit', 0))
-                new_corr = st.number_input("주행거리 보정값 (km, +/-)", value=dm.data['settings'].get('mileage_correction', 0))
-                if st.form_submit_button("설정 저장"):
-                    dm.data['settings']['subsidy_limit'] = new_limit
-                    dm.data['settings']['mileage_correction'] = new_corr
-                    dm.save_data()
-                    st.success("저장되었습니다.")
-        
-        # 4-2. 지역 관리
-        with st_t2:
-            st.write("등록된 상/하차지 정보를 수정합니다.")
-            sel_center = st.selectbox("지역 선택", dm.data['centers'])
-            if sel_center:
-                curr_info = dm.data['locations'].get(sel_center, {"address":"", "memo":""})
-                new_addr = st.text_input("주소", value=curr_info.get("address",""))
-                new_memo = st.text_input("메모", value=curr_info.get("memo",""))
-                if st.button("정보 업데이트"):
-                    dm.update_location(sel_center, new_addr, new_memo)
-                    st.success(f"{sel_center} 정보 업데이트 완료")
-        
-        # 4-3. 일괄 적용 & OCR
-        with st_t3:
-            st.markdown("##### 💰 운임 일괄 적용")
-            with st.expander("미정산(0원) 기록 일괄 업데이트"):
-                batch_f = st.selectbox("상차지", dm.data['centers'], key="b_f")
-                batch_t = st.selectbox("하차지", dm.data['centers'], key="b_t")
-                batch_inc = st.number_input("적용할 금액 (만원)", step=0.5)
-                if st.button("일괄 적용 실행"):
-                    count = 0
-                    target_inc = int(batch_inc * 10000)
-                    for r in dm.data['records']:
-                        if r['type'] == '화물운송' and r.get('from') == batch_f and r.get('to') == batch_t:
-                            if r.get('income', 0) == 0:
-                                r['income'] = target_inc
-                                count += 1
-                    dm.save_data()
-                    st.success(f"총 {count}건 업데이트 완료!")
-
-            st.divider()
-            st.markdown("##### 📷 영수증 OCR (베타)")
-            if pytesseract:
-                ocr_file = st.file_uploader("영수증 이미지 업로드", type=['png', 'jpg', 'jpeg'])
-                if ocr_file:
-                    image = Image.open(ocr_file)
-                    st.image(image, caption='업로드된 이미지', width=300)
-                    if st.button("텍스트 인식 시작"):
-                        try:
-                            # Tesseract 경로 설정 필요시: pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
-                            text = pytesseract.image_to_string(image, lang='kor+eng')
-                            st.text_area("인식 결과 (복사해서 사용하세요)", text, height=150)
-                            st.info("인식된 내용을 바탕으로 입력 탭에서 기록해주세요.")
-                        except Exception as e:
-                            st.error(f"OCR 엔진 오류: {e} (서버에 tesseract가 설치되어 있어야 합니다)")
-            else:
-                st.warning("OCR 라이브러리(Tesseract)가 설치되지 않아 이 기능을 사용할 수 없습니다.")
-
-        # 4-4. 백업/복원
-        with st_t4:
-            json_str = json.dumps(dm.data, ensure_ascii=False, indent=2)
-            st.download_button("전체 데이터 백업 (JSON)", json_str, file_name="cargo_full_backup.json", mime="application/json")
+                k = f"{week_num}주차"
+                if k not in weekly_data: weekly_data[k] = {'inc':0, 'exp':0, 'cnt':0}
+                weekly_data[k]['inc'] += r.get('income', 0)
+                weekly_data[k]['exp'] += r.get('cost', 0)
+                if r['type'] == '화물운송': weekly_data[k]['cnt'] += 1
             
-            up_file = st.file_uploader("백업 파일 복원", type="json")
-            if up_file and st.button("복원하기 (덮어쓰기)"):
-                try:
-                    up_file.seek(0)
-                    content = json.loads(up_file.read().decode("utf-8"))
-                    dm.data = content
-                    dm.save_data()
-                    st.success("복원 완료! 새로고침하세요.")
-                except Exception as e:
-                    st.error(f"복원 실패: {e}")
+            w_rows = []
+            for w in sorted(weekly_data.keys()):
+                wd = weekly_data[w]
+                w_rows.append({
+                    "주차": w,
+                    "수입": f"{wd['inc']:,}",
+                    "지출": f"{wd['exp']:,}",
+                    "정산": f"{wd['inc']-wd['exp']:,}",
+                    "운행수": f"{wd['cnt']}건"
+                })
+            st.dataframe(pd.DataFrame(w_rows), hide_index=True, use_container_width=True)
+
+    # --- TAB 4: 월별 (Monthly) ---
+    with tabs[3]:
+        m_year = st.selectbox("조회 년도", range(2023, 2030), index=2, key="m_y")
+        m_recs = [r for r in dm.data['records'] if r['date'].startswith(str(m_year))]
+        
+        monthly_stats = {}
+        for r in m_recs:
+            ym = dm.get_stat_date(r['date'], r['time'])[:7] # YYYY-MM
+            if ym not in monthly_stats: monthly_stats[ym] = {'inc':0, 'exp':0}
+            monthly_stats[ym]['inc'] += r.get('income', 0)
+            monthly_stats[ym]['exp'] += r.get('cost', 0)
+            
+        if monthly_stats:
+            m_rows = []
+            for m in sorted(monthly_stats.keys(), reverse=True):
+                md = monthly_stats[m]
+                m_rows.append({
+                    "월": m,
+                    "수입": f"{md['inc']:,}",
+                    "지출": f"{md['exp']:,}",
+                    "순익": f"{md['inc']-md['exp']:,}"
+                })
+            st.dataframe(pd.DataFrame(m_rows), hide_index=True, use_container_width=True)
+        else:
+            st.write("기록 없음")
+
+    # --- TAB 5: 설정 및 지역 관리 (Add Center 기능 복구) ---
+    with tabs[4]:
+        st.subheader("⚙️ 설정 및 지역 관리")
+        
+        # 1. 새 지역 추가 (문제 해결됨)
+        with st.expander("➕ 새 지역/거래처 추가", expanded=False):
+            with st.form("add_center_form"):
+                new_name = st.text_input("지역명 (예: 김포센터)")
+                new_addr = st.text_input("주소")
+                new_memo = st.text_input("메모 (출입방법 등)")
+                
+                if st.form_submit_button("추가하기"):
+                    if new_name:
+                        dm.add_center(new_name, new_addr, new_memo)
+                        st.success(f"'{new_name}' 추가 완료! 입력 탭에서 바로 확인 가능합니다.")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("지역명을 입력해주세요.")
+
+        # 2. 기존 지역 관리
+        with st.expander("📝 등록된 지역 수정"):
+            target_cen = st.selectbox("수정할 지역 선택", dm.data['centers'])
+            if target_cen:
+                info = dm.data['locations'].get(target_cen, {})
+                mod_addr = st.text_input("주소 수정", value=info.get('address', ''))
+                mod_memo = st.text_input("메모 수정", value=info.get('memo', ''))
+                if st.button("수정 저장"):
+                    dm.add_center(target_cen, mod_addr, mod_memo)
+                    st.success("수정됨")
+
+        # 3. 데이터 백업
+        st.divider()
+        json_str = json.dumps(dm.data, ensure_ascii=False, indent=2)
+        st.download_button("📂 전체 데이터 백업 (JSON)", json_str, "cargo_backup.json")
+        
+        # 데이터 초기화
+        if st.button("⚠️ 데이터 전체 초기화 (주의)"):
+            if os.path.exists(dm.filename):
+                os.remove(dm.filename)
+                st.session_state.clear()
+                st.rerun()
 
 if __name__ == "__main__":
     main()
