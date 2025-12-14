@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import time
 import base64
 
-# OCR 라이브러리 (에러 방지용 예외처리)
+# OCR 라이브러리 예외처리
 try:
     from PIL import Image
     import pytesseract
@@ -15,26 +15,22 @@ except ImportError:
     pytesseract = None
 
 # ==========================================
-# 0. 안전한 형변환 함수 (TypeError 방지 핵심)
+# 0. 안전한 형변환 함수 (에러 방지)
 # ==========================================
 def safe_int(value):
-    """None이나 문자열을 안전하게 정수로 변환"""
     try:
         if value is None: return 0
         return int(float(value))
-    except:
-        return 0
+    except: return 0
 
 def safe_float(value):
-    """None이나 문자열을 안전하게 실수로 변환"""
     try:
         if value is None: return 0.0
         return float(value)
-    except:
-        return 0.0
+    except: return 0.0
 
 # ==========================================
-# 1. UI/UX 스타일 설정
+# 1. UI 스타일 설정
 # ==========================================
 def apply_custom_css():
     st.markdown("""
@@ -58,7 +54,7 @@ def apply_custom_css():
 # 2. 데이터 관리 클래스
 # ==========================================
 class DataManager:
-    def __init__(self, filename="cargo_data_final_v3.json"):
+    def __init__(self, filename="cargo_data_final_v4.json"):
         self.filename = filename
         self.data = {
             "records": [],
@@ -170,21 +166,23 @@ def main():
     st.set_page_config(page_title="Cargo Note", page_icon="🚛", layout="centered")
     apply_custom_css()
 
-    if 'dm' not in st.session_state: st.session_state.dm = DataManager()
-    dm = st.session_state.dm
+    # DataManager 로드 (변수명 'dm_instance'로 변경하여 충돌 방지)
+    if 'dm_instance' not in st.session_state:
+        st.session_state.dm_instance = DataManager()
+    
+    dm = st.session_state.dm_instance
 
     st.markdown("### 🚛 Cargo Note Pro")
 
-    # --- 상단 대시보드 (안전 계산 적용) ---
+    # --- 상단 대시보드 ---
     now = datetime.now()
     cur_ym = now.strftime("%Y-%m")
     m_recs = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']).startswith(cur_ym)]
     
-    # Safe calc
     inc = sum(safe_int(r.get('income')) for r in m_recs)
     exp = sum(safe_int(r.get('cost')) for r in m_recs)
     
-    with st.expander(f"📊 {now.month}월 현황 요약 (펼치기)", expanded=False):
+    with st.expander(f"📊 {now.month}월 현황 요약", expanded=False):
         c1, c2, c3 = st.columns(3)
         c1.metric("수입", f"{inc:,}")
         c2.metric("지출", f"{exp:,}")
@@ -204,11 +202,10 @@ def main():
 
             if i_type in ["화물운송", "대기", "공차이동"]:
                 cen_list = [""] + dm.data['centers']
-                c_f = st.selectbox("상차", cen_list, key="c_f")
-                c_t = st.selectbox("하차", cen_list, key="c_t")
+                c_f = st.selectbox("상차", cen_list, key="input_from")
+                c_t = st.selectbox("하차", cen_list, key="input_to")
                 
                 k = f"{c_f}-{c_t}"
-                # Safe casting for None values from JSON
                 def_dist = safe_float(dm.data['distances'].get(k))
                 def_inc = safe_int(dm.data['fares'].get(k)) / 10000.0
                 
@@ -290,10 +287,10 @@ def main():
                         st.rerun()
         else: st.info("기록이 없습니다.")
 
-    # 2. 일별
+    # 2. 일별 (Key 변경: daily_month로 수정하여 충돌 해결)
     with tabs[1]:
-        sy = st.selectbox("년", range(2023, 2030), index=2, key="dy")
-        sm = st.selectbox("월", range(1, 13), index=datetime.now().month-1, key="dm")
+        sy = st.selectbox("년", range(2023, 2030), index=2, key="daily_year")
+        sm = st.selectbox("월", range(1, 13), index=datetime.now().month-1, key="daily_month")
         target = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']).startswith(f"{sy}-{sm:02d}")]
         
         daily = {}
@@ -326,7 +323,7 @@ def main():
 
     # 4. 월별
     with tabs[3]:
-        my = st.selectbox("년도", range(2023, 2030), index=2, key="my")
+        my = st.selectbox("년도", range(2023, 2030), index=2, key="monthly_year")
         monthly = {}
         for r in dm.data['records']:
             if r['date'].startswith(str(my)):
@@ -340,8 +337,8 @@ def main():
     # 5. 통계/출력
     with tabs[4]:
         st.subheader("🖨️ 운송내역서 출력")
-        py = st.selectbox("출력 년도", range(2023, 2030), index=2, key="py")
-        pm = st.selectbox("출력 월", range(1, 13), index=datetime.now().month-1, key="pm")
+        py = st.selectbox("출력 년도", range(2023, 2030), index=2, key="print_year")
+        pm = st.selectbox("출력 월", range(1, 13), index=datetime.now().month-1, key="print_month")
         
         tgt_recs = [r for r in dm.data['records'] if dm.get_stat_date(r['date'], r['time']).startswith(f"{py}-{pm:02d}")]
         
